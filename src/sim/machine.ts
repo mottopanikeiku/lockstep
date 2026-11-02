@@ -28,6 +28,10 @@ export interface Fault {
   step: number;
 }
 
+/**
+ * cycles = issued + specialCycles + shuffleCycles + globalCycles + sharedCycles + barrierWait.
+ * Each *Cycles field is what that kind of instruction costs on top of its one issue cycle.
+ */
 export interface Metrics {
   cycles: number;
   issued: number;
@@ -63,12 +67,19 @@ export interface SimResult {
   notes: Diagnostic[];
   warpsPerBlock: number;
   trace?: Trace;
+  /** With `inspect`: the watched warp's registers right after the chosen step. */
+  inspected?: { regs: Float64Array; live: number };
 }
 
 export interface SimOptions {
   trace?: boolean;
   maxSteps?: number;
+  /** Stop after this step and capture the registers of one warp (global warp index). */
+  inspect?: { step: number; warp: number };
 }
+
+/** Thrown to stop a run early once the inspected step is reached. */
+class Stop extends Error {}
 
 const RUN = 0;
 const BAR = 1;
@@ -215,6 +226,8 @@ export class Machine {
   private readonly scratch = new Int32Array(32);
   private readonly args: Arg[];
   private raceFault?: Fault;
+  /** Warps of the block being run. */
+  private warps: Warp[] = [];
   private readonly bankWords = new Int32Array(BANKS * 32);
   private readonly bankCount = new Int32Array(BANKS);
   private readonly shflTmp = new Float64Array(32);
@@ -223,7 +236,7 @@ export class Machine {
     private readonly k: KernelIR,
     private readonly launch: Launch,
     args: Arg[],
-    opts: SimOptions = {},
+    private readonly opts: SimOptions = {},
   ) {
     if (args.length !== k.params.length) {
       throw new Error(`kernel ${k.name} takes ${k.params.length} arguments, got ${args.length}`);
@@ -266,6 +279,7 @@ export class Machine {
 
   run(): SimResult {
     let fault: Fault | undefined;
+    let inspected: SimResult['inspected'];
     try {
       for (let by = 0; by < this.launch.grid.y; by++) {
         for (let bx = 0; bx < this.launch.grid.x; bx++) {
@@ -273,9 +287,14 @@ export class Machine {
         }
       }
     } catch (err) {
-      if (!(err instanceof Fail)) throw err;
-      const ins = this.code[this.pc];
-      fault = { kind: err.kind, message: err.message, line: ins?.line ?? 0, col: ins?.col ?? 0, step: this.step };
+      if (err instanceof Stop) {
+        const w = this.warps.find((x) => x.id === this.opts.inspect!.warp);
+        if (w) inspected = { regs: w.regs.slice(), live: w.live };
+      } else {
+        if (!(err instanceof Fail)) throw err;
+        const ins = this.code[this.pc];
+        fault = { kind: err.kind, message: err.message, line: ins?.line ?? 0, col: ins?.col ?? 0, step: this.step };
+      }
     }
     if (!fault && this.firstRace) {
       fault = this.raceFault;
@@ -289,6 +308,7 @@ export class Machine {
       notes: this.notes,
       warpsPerBlock: this.warpsPerBlock,
       trace: this.trace,
+      inspected,
     };
   }
 
@@ -301,7 +321,7 @@ export class Machine {
     for (const arr of this.shared) {
       this.sharedMem.fill(arr.type === 'float' ? NaN : -559038737, arr.offset, arr.offset + arr.size);
     }
-    const warps: Warp[] = [];
+    const warps: Warp[] = (this.warps = []);
     for (let w = 0; w < this.warpsPerBlock; w++) warps.push(this.makeWarp(w));
     for (;;) {
       let running = false;
@@ -451,6 +471,10 @@ export class Machine {
     this.step = s;
     const R = w.regs;
     let cost = this.baseCost[pc];
+    if (cost > COST.issue) {
+      if (ins.op === 'shfl') this.metrics.shuffleCycles += cost - COST.issue;
+      else this.metrics.specialCycles += cost - COST.issue;
+    }
     let units = 0;
     top.pc = pc + 1;
     try {
@@ -493,7 +517,6 @@ export class Machine {
           const d = ins.dst * 32;
           const a = ins.a * 32;
           for (let l = 0; l < 32; l++) if ((m >>> l) & 1) R[d + l] = mathOp(ins.fn, R[a + l]);
-          this.metrics.specialCycles += cost;
           break;
         }
         case 'ld':
@@ -506,12 +529,11 @@ export class Machine {
           } else {
             units = this.sharedAccess(w, ins, m);
             cost += units * COST.sharedWavefront;
-            this.metrics.sharedCycles += 1 + units * COST.sharedWavefront;
+            this.metrics.sharedCycles += units * COST.sharedWavefront;
           }
           break;
         case 'shfl':
           this.shuffle(w, ins, m);
-          this.metrics.shuffleCycles += cost;
           break;
         case 'bar':
           if (m !== w.live) this.divergedAt(w, m, '__syncthreads()');
@@ -569,6 +591,7 @@ export class Machine {
       stack.pop();
     }
     if (stack.length === 0) w.state = DONE;
+    if (this.opts.inspect?.step === s) throw new Stop();
   }
 
   private divergedAt(w: Warp, m: number, what: string): never {
@@ -655,7 +678,7 @@ export class Machine {
     metrics.globalIdealSectors += Math.ceil((lanes * 4) / SECTOR_BYTES);
     metrics.atomicCollisions += collisions;
     const cycles = nsect * COST.globalSector + collisions * COST.atomicCollision;
-    metrics.globalCycles += 1 + cycles;
+    metrics.globalCycles += cycles;
     return { sectors: nsect, cycles };
   }
 

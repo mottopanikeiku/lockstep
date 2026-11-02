@@ -90,8 +90,8 @@ export interface KernelIR {
   numRegs: number;
   consts: { reg: number; value: number }[];
   specials: { reg: number; which: Special }[];
-  /** Variable name held by each register, or null for temporaries. */
-  regNames: (string | null)[];
+  /** Scalar parameters and locals in declaration order, for inspecting a thread. Folded constants carry a value instead of a register. */
+  vars: { name: string; type: ValType; reg?: number; value?: number }[];
   code: Instr[];
   /** Lines of the source that contain code, for the "lines" score. */
   lines: number;

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>lockstep: GPU programming, one warp at a time</title>
+    <meta name="description" content="A browser game for learning CUDA. Write small kernels and watch a simulated GPU run them warp by warp: divergence, coalescing, bank conflicts and races." />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <script>
+      try {
+        const saved = JSON.parse(localStorage.getItem('lockstep:v1') || '{}').theme;
+        const dark = saved ? saved === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <header class="top">
+      <a class="brand" href="./" aria-label="lockstep home">
+        <svg viewBox="0 0 64 16" width="48" height="12" aria-hidden="true">
+          <rect x="0" y="0" width="6" height="16" /><rect x="8" y="0" width="6" height="16" /><rect x="16" y="0" width="6" height="16" />
+          <rect x="24" y="0" width="6" height="16" class="off" /><rect x="32" y="0" width="6" height="16" class="off" />
+          <rect x="40" y="0" width="6" height="16" /><rect x="48" y="0" width="6" height="16" /><rect x="56" y="0" width="6" height="16" />
+        </svg>
+        <span>lockstep</span>
+      </a>
+      <button id="level-button" class="level-button" aria-haspopup="dialog"></button>
+      <nav class="top-actions" aria-label="Tools">
+        <button id="share" class="ghost">Share</button>
+        <button id="help-button" class="ghost" aria-label="Keyboard shortcuts and how scoring works">?</button>
+        <button id="theme" class="ghost" aria-label="Switch between light and dark">◐</button>
+      </nav>
+    </header>
+
+    <main class="layout">
+      <section class="left" aria-label="Level and code">
+        <article id="brief" class="brief"></article>
+        <div class="editor-frame">
+          <div class="editor-head">
+            <span class="label">kernel.cu</span>
+            <span class="muted" id="editor-note">cycles per line show up in the left margin after a run</span>
+          </div>
+          <div id="editor"></div>
+        </div>
+        <div class="controls">
+          <button id="run" class="primary">Run <kbd>Ctrl ↵</kbd></button>
+          <button id="step-back" aria-label="Step back">◀</button>
+          <button id="step">Step <kbd>Alt →</kbd></button>
+          <span class="spacer"></span>
+          <button id="reset" class="ghost">Reset code</button>
+        </div>
+        <div id="problem" class="problem" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="right" id="right" aria-label="Simulation">
+        <div id="score" class="panel score"></div>
+        <div class="panel">
+          <h2>Warps over time</h2>
+          <canvas id="timeline" tabindex="0" aria-label="Timeline of warp instructions. Use the arrow keys to step."></canvas>
+          <p id="step-info" class="step-info"></p>
+        </div>
+        <div class="panel">
+          <h2>Threads <span id="block-label" class="muted"></span></h2>
+          <div id="blocks" class="blocks" role="group" aria-label="Blocks"></div>
+          <canvas id="threads" aria-label="Lanes of each warp in the current block. Click a lane to see its variables."></canvas>
+          <div class="legend">
+            <span><i class="sw active"></i>active</span><span><i class="sw masked"></i>masked off by a branch</span>
+            <span><i class="sw waiting"></i>other warps</span><span><i class="sw gone"></i>returned</span>
+          </div>
+          <div id="lane-info" class="lane-info"></div>
+        </div>
+        <div class="panel">
+          <h2>Memory at this step</h2>
+          <div class="legend">
+            <span><i class="sw read"></i>read</span><span><i class="sw write"></i>write</span><span><i class="sw atomic"></i>atomic</span>
+            <span><i class="sw sector"></i>rest of a 32-byte sector</span>
+          </div>
+          <div id="memory" class="memory"></div>
+        </div>
+        <div class="panel">
+          <h2>Output check</h2>
+          <div id="outputs" class="outputs"></div>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="levels" class="levels" aria-label="Levels">
+      <form method="dialog" class="dialog-head"><h2>Levels</h2><button class="ghost" aria-label="Close">✕</button></form>
+      <p class="muted">The first three open one at a time. After that, play in any order.</p>
+      <ol id="level-list"></ol>
+    </dialog>
+
+    <dialog id="help" class="help" aria-label="Help">
+      <form method="dialog" class="dialog-head"><h2>How it works</h2><button class="ghost" aria-label="Close">✕</button></form>
+      <p>
+        Your kernel runs on a simulated GPU. Each warp of 32 threads executes one instruction at a time for all its active lanes.
+        When lanes disagree at a branch the warp runs both sides, one after the other, and joins them again where the paths meet.
+      </p>
+      <p>
+        Scores: <b>cycles</b> is the total over all warps (instructions, memory traffic, bank conflicts and time spent waiting at
+        barriers), <b>sectors</b> counts the 32-byte pieces of global memory moved, and <b>lines</b> counts lines of code.
+        Par comes from a reference solution. The numbers come from a small made-up cost model, not a real GPU.
+        <a href="https://github.com/mottopanikeiku/lockstep/blob/main/docs/cost-model.md">The cost model, in one page.</a>
+      </p>
+      <h3>Keys</h3>
+      <dl class="keys">
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> <kbd>Enter</kbd></dt><dd>Run</dd>
+        <dt><kbd>Alt</kbd> <kbd>→</kbd> / <kbd>←</kbd></dt><dd>Step forward / back</dd>
+        <dt><kbd>→</kbd> <kbd>←</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd></dt><dd>Move through the timeline when it has focus</dd>
+        <dt><kbd>Esc</kbd> then <kbd>Tab</kbd></dt><dd>Leave the editor (Tab indents inside it)</dd>
+        <dt><kbd>?</kbd></dt><dd>This help</dd>
+      </dl>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

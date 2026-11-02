@@ -140,7 +140,7 @@ class Lowerer {
   private scopes: Map<string, Sym>[] = [];
   private globals = new Map<string, Sym>();
   private nregs = 0;
-  private regNames: (string | null)[] = [];
+  private vars: KernelIR['vars'] = [];
   private constRegs = new Map<string, number>();
   private consts: { reg: number; value: number }[] = [];
   private specialRegs = new Map<Special, number>();
@@ -175,9 +175,10 @@ class Lowerer {
         this.params.push({ kind: 'buffer', name: p.name, type: p.type, isConst: p.isConst, buf });
         this.scopes[0].set(p.name, { k: 'buffer', buf, t: p.type, isConst: p.isConst });
       } else {
-        const reg = this.newReg(p.name);
+        const reg = this.newReg();
         this.params.push({ kind: 'scalar', name: p.name, type: p.type, reg });
         this.scopes[0].set(p.name, { k: 'var', reg, t: p.type, isConst: p.isConst });
+        this.vars.push({ name: p.name, type: p.type, reg });
       }
     }
     for (const s of k.body) collectAssigned(s, this.assigned);
@@ -193,7 +194,7 @@ class Lowerer {
       numRegs: this.nregs,
       consts: this.consts,
       specials: [...this.specialRegs].map(([which, reg]) => ({ reg, which })),
-      regNames: this.regNames,
+      vars: this.vars,
       code: this.flatten(),
       lines,
       warnings: this.warnings,
@@ -229,8 +230,7 @@ class Lowerer {
     if (!this.cur.term) this.cur.instrs.push(ins);
   }
 
-  private newReg(name: string | null = null): number {
-    this.regNames.push(name);
+  private newReg(): number {
     return this.nregs++;
   }
 
@@ -283,6 +283,8 @@ class Lowerer {
       throw new CompileError(`'${name}' is a built-in name`, loc);
     }
     scope.set(name, sym);
+    if (sym.k === 'var') this.vars.push({ name, type: sym.t, reg: sym.reg });
+    else if (sym.k === 'const') this.vars.push({ name, type: sym.t, value: sym.value });
   }
 
   private special(obj: string, prop: string, loc: Loc): V {
@@ -294,7 +296,7 @@ class Lowerer {
     const which = `${obj}.${prop}` as Special;
     let reg = this.specialRegs.get(which);
     if (reg === undefined) {
-      reg = this.newReg(which);
+      reg = this.newReg();
       this.specialRegs.set(which, reg);
     }
     return { t: 'int', reg };
@@ -526,16 +528,15 @@ class Lowerer {
           continue;
         }
         if (!this.mutableRegs.has(v.reg)) {
-          this.regNames[v.reg] ??= d.name;
           this.declare(d.name, { k: 'var', reg: v.reg, t: s.type, isConst: s.isConst }, d.loc);
           continue;
         }
-        const reg = this.newReg(d.name);
+        const reg = this.newReg();
         this.into(v, reg, d.loc);
         this.declare(d.name, { k: 'var', reg, t: s.type, isConst: s.isConst }, d.loc);
         continue;
       }
-      const reg = this.newReg(d.name);
+      const reg = this.newReg();
       if (this.assigned.has(d.name)) this.mutableRegs.add(reg);
       if (d.init) {
         const v = this.convert(this.value(d.init, reg), s.type, d.loc, reg);
