@@ -10,7 +10,8 @@ export type BinFn =
   | 'lt' | 'le' | 'gt' | 'ge' | 'eq' | 'ne'
   | 'min' | 'max';
 export type UnFn = 'neg' | 'not' | 'bnot' | 'abs' | 'floor' | 'ceil';
-export type CvtFn = 'i2f' | 'f2i' | 'tobool';
+/** `u2f` converts an unsigned int, which is how CUDA types threadIdx, blockIdx, blockDim and gridDim. */
+export type CvtFn = 'i2f' | 'u2f' | 'f2i' | 'tobool';
 /** Functions that run on the special function unit and cost extra cycles. */
 export type MathFn = 'exp' | 'log' | 'sqrt' | 'rsqrt';
 export type AtomFn = 'add' | 'sub' | 'max' | 'min' | 'exch';
@@ -36,7 +37,8 @@ interface At {
 export type Instr = At &
   (
     | { op: 'mov'; dst: number; a: number }
-    | { op: 'bin'; fn: BinFn; float: boolean; dst: number; a: number; b: number }
+    /** `unsigned` makes div, rem, shr, min, max and comparisons treat both operands as unsigned ints. */
+    | { op: 'bin'; fn: BinFn; float: boolean; unsigned?: boolean; dst: number; a: number; b: number }
     | { op: 'mad'; float: boolean; dst: number; a: number; b: number; c: number }
     | { op: 'un'; fn: UnFn; float: boolean; dst: number; a: number }
     | { op: 'cvt'; fn: CvtFn; dst: number; a: number }
@@ -49,7 +51,8 @@ export type Instr = At &
     | { op: 'syncwarp' }
     | { op: 'br'; target: number }
     | { op: 'cbr'; cond: number; t: number; f: number; join: number }
-    | { op: 'ret' }
+    /** `early` for a return statement, false where the kernel body ends. */
+    | { op: 'ret'; early: boolean }
   );
 
 export type Op = Instr['op'];

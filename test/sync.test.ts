@@ -26,7 +26,21 @@ describe('barriers', () => {
 }`;
     const r = run(src, launch1d(2, 64), [iota(100), zeros(100), 100]);
     expect(r.fault).toMatchObject({ kind: 'deadlock', line: 6 });
-    expect(r.fault!.message).toContain('28 returned early (line 3)');
+    expect(r.fault!.message).toContain('28 of them returned early on line 3');
+  });
+
+  it('tells a skipped barrier apart from an early return', () => {
+    const src = `__global__ void k(float* out) {
+  int t = threadIdx.x;
+  if (t < 32) {
+    __syncthreads();
+  }
+  out[t] = 1.0f;
+}`;
+    const r = run(src, launch1d(1, 128), [zeros(128)]);
+    expect(r.fault).toMatchObject({ kind: 'deadlock', line: 4 });
+    expect(r.fault!.message).toContain('96 of them (warps 1-3) finished the kernel without reaching it');
+    expect(r.fault!.message).not.toContain('return');
   });
 
   it('reports warps waiting at different barriers', () => {
@@ -39,7 +53,7 @@ describe('barriers', () => {
 }`;
     const r = run(src, launch1d(1, 64), [zeros(1)]);
     expect(r.fault?.kind).toBe('deadlock');
-    expect(r.fault!.message).toContain('warp 0 on line 3; warp 1 on line 5');
+    expect(r.fault!.message).toContain('(warp 0 on line 3, warp 1 on line 5)');
   });
 
   it('accepts a warp-uniform branch around work and charges the wait', () => {
@@ -105,7 +119,37 @@ describe('race detector', () => {
 }`;
     const r = run(src, oneWarp, [zeros(1)]);
     expect(r.fault?.kind).toBe('race');
-    expect(r.fault!.message).toContain('Several threads write the same address');
+    expect(r.fault!.message).toContain('Both threads wrote it from the same line');
+  });
+
+  it('points at blockIdx when every block writes the same elements', () => {
+    const src = `__global__ void k(const float* a, float* out) {
+  int i = threadIdx.x;
+  out[i] = a[i] + 1.0f;
+}`;
+    const r = run(src, launch1d(2, 32), [iota(64), zeros(64)]);
+    expect(r.fault?.kind).toBe('race');
+    expect(r.fault!.message).toContain('thread 0 of block 0 wrote it on line 3 and thread 0 of block 1 wrote it on line 3');
+    expect(r.fault!.message).toContain('the index needs blockIdx');
+  });
+
+  it('asks for an atomic when threads update one element in place', () => {
+    const src = `__global__ void k(const int* a, int* hist) {
+  hist[a[threadIdx.x]]++;
+}`;
+    const r = run(src, oneWarp, [zeros(32), zeros(4)]);
+    expect(r.fault?.kind).toBe('race');
+    expect(r.fault!.message).toContain('update it in place');
+    expect(r.fault!.message).toContain('atomicAdd');
+  });
+
+  it('notes reads of shared memory nobody wrote', () => {
+    const src = `__global__ void k(int* out) {
+  __shared__ int s[32];
+  out[threadIdx.x] = s[threadIdx.x];
+}`;
+    const r = run(src, oneWarp, [zeros(32)]);
+    expect(r.notes[0]).toMatchObject({ line: 3, message: 'reads s[0] before any thread wrote it, and shared memory starts out as garbage' });
   });
 
   it('flags plain read-modify-write across blocks and accepts atomics', () => {
@@ -115,7 +159,7 @@ describe('race detector', () => {
     const r = run(plain, launch1d(4, 32), [iota(4), zeros(1)]);
     expect(r.fault?.kind).toBe('race');
     expect(r.fault!.message).toContain('thread 0 of block 0 wrote it on line 2 and thread 0 of block 1 read it on line 2');
-    expect(r.fault!.message).toContain('use an atomic');
+    expect(r.fault!.message).toContain('the update has to be an atomic');
     const atomic = plain.replace('out[0] += a[blockIdx.x]', 'atomicAdd(&out[0], a[blockIdx.x])');
     const ok = run(atomic, launch1d(4, 32), [iota(4), zeros(1)]);
     expect(ok.fault).toBeUndefined();

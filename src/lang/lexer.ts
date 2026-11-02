@@ -74,6 +74,12 @@ function scan(src: string, line0: number, col0: number, out: Token[], warnings: 
       continue;
     }
     if (c === '"' || c === "'") {
+      if (out.at(-1)?.text === '(' && out.at(-2)?.text === 'printf') {
+        throw new CompileError('printf is not supported here, but after a run you can click any lane in the Threads panel to see its variables at that step', {
+          line,
+          col,
+        });
+      }
       throw new CompileError('string and character literals are not supported', { line, col });
     }
     const p = PUNCTS.find((s) => src.startsWith(s, i));

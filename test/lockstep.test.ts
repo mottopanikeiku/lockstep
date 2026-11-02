@@ -129,6 +129,26 @@ describe('lockstep execution', () => {
     expect(r.buffers[1][1]).toBe(16777216);
   });
 
+  it('treats threadIdx and friends as unsigned, like CUDA does', () => {
+    const src = `__global__ void k(int* o, float* f) {
+  int t = threadIdx.x;
+  o[0] = threadIdx.x - 1 >= 0;
+  o[1] = t - 1 >= 0;
+  o[2] = (threadIdx.x - 2) / 2;
+  o[3] = (t - 2) / 2;
+  o[4] = threadIdx.x - 1;
+  o[5] = min(threadIdx.x - 1, 5);
+  o[6] = (threadIdx.x - 1) >> 28;
+  f[0] = threadIdx.x - 1;
+}`;
+    const k = kernel(src);
+    expect(k.warnings).toHaveLength(1);
+    expect(k.warnings[0]).toMatchObject({ line: 3, message: expect.stringMatching(/^this comparison is always true in CUDA, because/) });
+    const r = simulate(k, { grid: { x: 1, y: 1 }, block: { x: 1, y: 1 } }, [zeros(7), zeros(1)]);
+    expect([...r.buffers[0]]).toEqual([1, 0, 2147483647, -1, -1, 5, 15]);
+    expect(r.buffers[1][0]).toBe(4294967296);
+  });
+
   it('reduces a warp with shuffles', () => {
     const src = `__global__ void k(const int* a, int* down, int* xr) {
   int t = threadIdx.x;

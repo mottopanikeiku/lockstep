@@ -17,8 +17,11 @@ import type {
 import { binOp, cvtOp, DivideByZero, unOp } from './ops';
 import { postDominators } from './postdom';
 
-/** A value during lowering: either a register or a compile-time constant. */
-type V = { t: ValType; reg: number; c?: undefined } | { t: ValType; c: number; reg?: undefined };
+/**
+ * A value during lowering: either a register or a compile-time constant. `u` marks an int that CUDA types
+ * as unsigned, which is anything computed from threadIdx, blockIdx, blockDim or gridDim before it lands in a variable.
+ */
+type V = { t: ValType; reg: number; c?: undefined; u?: boolean } | { t: ValType; c: number; reg?: undefined; u?: undefined };
 
 type Sym =
   | { k: 'var'; reg: number; t: ValType; isConst: boolean }
@@ -34,7 +37,8 @@ type LValue =
 type Term = { line: number; col: number } & (
   | { k: 'br'; to: number }
   | { k: 'cbr'; cond: number; t: number; f: number }
-  | { k: 'ret' }
+  /** `early` for a return statement, false for falling off the end of the kernel. */
+  | { k: 'ret'; early: boolean }
 );
 
 interface Block {
@@ -184,7 +188,7 @@ class Lowerer {
     for (const s of k.body) collectAssigned(s, this.assigned);
     for (const p of this.params) if (p.kind === 'scalar' && this.assigned.has(p.name)) this.mutableRegs.add(p.reg);
     for (const s of k.body) this.stmt(s);
-    this.terminate({ k: 'ret', ...k.end });
+    this.terminate({ k: 'ret', early: false, ...k.end });
     this.scopes.pop();
     return {
       name: k.name,
@@ -299,7 +303,7 @@ class Lowerer {
       reg = this.newReg();
       this.specialRegs.set(which, reg);
     }
-    return { t: 'int', reg };
+    return { t: 'int', reg, u: true };
   }
 
   // ---- constants ----
@@ -378,7 +382,7 @@ class Lowerer {
     if (v.t === to) return v;
     if (v.c !== undefined) return { t: to, c: this.constConvert(v.c, to) };
     if (to === 'int' && v.t === 'bool') return { t: 'int', reg: v.reg };
-    const fn = to === 'float' ? 'i2f' : to === 'int' ? 'f2i' : 'tobool';
+    const fn = to === 'float' ? (v.u ? 'u2f' : 'i2f') : to === 'int' ? 'f2i' : 'tobool';
     const out = dst ?? this.newReg();
     this.emit({ op: 'cvt', fn, dst: out, a: v.reg, ...at });
     return { t: to, reg: out };
@@ -477,7 +481,7 @@ class Lowerer {
         return;
       }
       case 'return':
-        this.terminate({ k: 'ret', ...s.loc });
+        this.terminate({ k: 'ret', early: true, ...s.loc });
         this.startDeadBlock();
         return;
     }
@@ -701,7 +705,7 @@ class Lowerer {
     if (v.c !== undefined) return { t: rt, c: unOp(fn, t === 'float', v.c) };
     const out = dst ?? this.newReg();
     this.emit({ op: 'un', fn, float: t === 'float', dst: out, a: v.reg, ...e.loc });
-    return { t: rt, reg: out };
+    return { t: rt, reg: out, u: rt === 'int' && v.u };
   }
 
   private binary(e: Extract<Expr, { k: 'binary' }>, dst?: number): V {
@@ -733,7 +737,7 @@ class Lowerer {
     if (cc.c === 0 && t === 'int') return this.arith('*', ac, bc, at, dst);
     const out = dst ?? this.newReg();
     this.emit({ op: 'mad', float: t === 'float', dst: out, a: this.reg(ac), b: this.reg(bc), c: this.reg(cc), ...at });
-    return { t, reg: out };
+    return { t, reg: out, u: t === 'int' && (ac.u || bc.u || cc.u) };
   }
 
   private arith(op: BinaryOp, l: V, r: V, at: Loc, dst?: number): V {
@@ -744,6 +748,9 @@ class Lowerer {
     const a = this.convert(l, t, at);
     const b = this.convert(r, t, at);
     const rt: ValType = COMPARISON[op] ? 'bool' : t;
+    // C converts both sides to unsigned when either is, except that a shift takes the type of its left side.
+    const uns = t === 'int' && (fn === 'shl' || fn === 'shr' ? !!a.u : !!(a.u || b.u));
+    if (uns && COMPARISON[op]) this.unsignedZero(fn, a, b, at);
     if (a.c !== undefined && b.c !== undefined) {
       try {
         return { t: rt, c: binOp(fn, t === 'float', a.c, b.c) };
@@ -758,8 +765,24 @@ class Lowerer {
     if (b.c === 1 && (fn === 'mul' || fn === 'div')) return a;
     if (a.c === 1 && fn === 'mul') return b;
     const out = dst ?? this.newReg();
-    this.emit({ op: 'bin', fn, float: t === 'float', dst: out, a: this.reg(a), b: this.reg(b), ...at });
-    return { t: rt, reg: out };
+    const ins: Extract<Instr, { op: 'bin' }> = { op: 'bin', fn, float: t === 'float', dst: out, a: this.reg(a), b: this.reg(b), ...at };
+    if (uns) ins.unsigned = true;
+    this.emit(ins);
+    return { t: rt, reg: out, u: rt === 'int' && uns };
+  }
+
+  /** Warn where nvcc would: an unsigned value compared with 0 in a way that always or never holds. */
+  private unsignedZero(fn: BinFn, a: V, b: V, at: Loc): void {
+    let always: boolean | undefined;
+    if (b.c === 0 && a.u) always = fn === 'ge' ? true : fn === 'lt' ? false : undefined;
+    else if (a.c === 0 && b.u) always = fn === 'le' ? true : fn === 'gt' ? false : undefined;
+    if (always === undefined) return;
+    this.warnings.push({
+      severity: 'warning',
+      message: `this comparison is always ${always} in CUDA, because anything computed from threadIdx, blockIdx, blockDim or gridDim is unsigned, so store the value in an int first`,
+      line: at.line,
+      col: at.col,
+    });
   }
 
   private toBool(v: V, at: Loc, dst?: number): V {
@@ -807,12 +830,14 @@ class Lowerer {
     const end = this.newBlock();
     this.cond(e.c, tb.id, fb.id);
     this.place(tb, e.t.loc);
-    this.into(this.convert(this.value(e.t, out), t, e.t.loc, out), out, e.t.loc);
+    const tv = this.convert(this.value(e.t, out), t, e.t.loc, out);
+    this.into(tv, out, e.t.loc);
     this.terminate({ k: 'br', to: end.id, ...e.loc });
     this.place(fb, e.f.loc);
-    this.into(this.convert(this.value(e.f, out), t, e.f.loc, out), out, e.f.loc);
+    const fv = this.convert(this.value(e.f, out), t, e.f.loc, out);
+    this.into(fv, out, e.f.loc);
     this.place(end, e.loc);
-    return { t, reg: out };
+    return { t, reg: out, u: t === 'int' && (tv.u || fv.u) };
   }
 
   /** Static type of an expression, without emitting code. */
@@ -1037,7 +1062,7 @@ class Lowerer {
       }
       const out = dst ?? this.newReg();
       this.emit({ op: 'shfl', mode: SHUFFLES[name], dst: out, val: this.reg(val), arg: this.reg(arg), mask: this.reg(mask), width, ...e.loc });
-      return { t: val.t, reg: out };
+      return { t: val.t, reg: out, u: val.u };
     }
     if (Object.hasOwn(MATH, name)) {
       const m = MATH[name];
@@ -1049,9 +1074,12 @@ class Lowerer {
         a = this.convert(a, t, e.loc);
         b = this.convert(b, t, e.loc);
         if (a.c !== undefined && b.c !== undefined) return { t, c: binOp(m.fn, t === 'float', a.c, b.c) };
+        const uns = t === 'int' && !!(a.u || b.u);
         const out = dst ?? this.newReg();
-        this.emit({ op: 'bin', fn: m.fn, float: t === 'float', dst: out, a: this.reg(a), b: this.reg(b), ...e.loc });
-        return { t, reg: out };
+        const ins: Extract<Instr, { op: 'bin' }> = { op: 'bin', fn: m.fn, float: t === 'float', dst: out, a: this.reg(a), b: this.reg(b), ...e.loc };
+        if (uns) ins.unsigned = true;
+        this.emit(ins);
+        return { t, reg: out, u: uns };
       }
       arity(1);
       let a = this.value(args[0]);
@@ -1099,7 +1127,7 @@ class Lowerer {
       return [];
     };
     for (const b of this.blocks) {
-      if (!b.term) b.term = { k: 'ret', line: 0, col: 0 };
+      if (!b.term) b.term = { k: 'ret', early: false, line: 0, col: 0 };
     }
     while (stack.length) {
       const b = this.blocks[stack.pop()!];
@@ -1144,7 +1172,7 @@ class Lowerer {
         conds.push({ ins, t: index.get(t.t)!, f: index.get(t.f)!, join: ipdom[i] });
         code.push(ins);
       } else {
-        code.push({ op: 'ret', ...at });
+        code.push({ op: 'ret', early: t.early, ...at });
       }
     }
     start[order.length] = -1;

@@ -17,8 +17,8 @@ function fmax(a: number, b: number): number {
   return Math.max(a, b);
 }
 
-/** 32-bit int and float semantics, as nvcc would compile them. */
-export function binOp(fn: BinFn, float: boolean, a: number, b: number): number {
+/** 32-bit int and float semantics, as nvcc would compile them. Ints are held as signed 32-bit values either way. */
+export function binOp(fn: BinFn, float: boolean, a: number, b: number, unsigned = false): number {
   if (float) {
     switch (fn) {
       case 'add': return f(a + b);
@@ -34,6 +34,25 @@ export function binOp(fn: BinFn, float: boolean, a: number, b: number): number {
       case 'eq': return a === b ? 1 : 0;
       case 'ne': return a !== b ? 1 : 0;
       default: throw new Error(`float ${fn}`);
+    }
+  }
+  if (unsigned) {
+    const ua = a >>> 0;
+    const ub = b >>> 0;
+    switch (fn) {
+      case 'div':
+        if (ub === 0) throw new DivideByZero();
+        return Math.floor(ua / ub) | 0;
+      case 'rem':
+        if (ub === 0) throw new DivideByZero();
+        return ua % ub | 0;
+      case 'shr': return a >>> (b & 31) | 0;
+      case 'min': return Math.min(ua, ub) | 0;
+      case 'max': return Math.max(ua, ub) | 0;
+      case 'lt': return ua < ub ? 1 : 0;
+      case 'le': return ua <= ub ? 1 : 0;
+      case 'gt': return ua > ub ? 1 : 0;
+      case 'ge': return ua >= ub ? 1 : 0;
     }
   }
   switch (fn) {
@@ -82,6 +101,7 @@ export function unOp(fn: UnFn, float: boolean, a: number): number {
 export function cvtOp(fn: CvtFn, a: number): number {
   switch (fn) {
     case 'i2f': return f(a);
+    case 'u2f': return f(a >>> 0);
     case 'tobool': return a !== 0 ? 1 : 0;
     case 'f2i':
       if (Number.isNaN(a)) return 0;

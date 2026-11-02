@@ -103,6 +103,8 @@ describe('parser', () => {
     expect(errorOf('__global__ void k(float* a) { a[0] = __syncthreads(); }').message).toMatch(/does not return a value/);
     expect(errorOf('__global__ void k(float* a) { atomicAdd(a[0], 1.0f); }').message).toMatch(/address of an array element/);
     expect(errorOf('__global__ void k(float* a) { a[0] = sqrtff(a[1]); }').message).toContain(`did you mean 'sqrtf'?`);
+    expect(errorOf('__global__ void k(float* a) { printf("%f", a[0]); }').message).toMatch(/^printf is not supported here, but .* Threads panel/);
+    expect(errorOf(`__global__ void k(float* a) { char c = 'x'; }`).message).toBe('string and character literals are not supported');
   });
 
   it('checks indices against declared dimensions', () => {

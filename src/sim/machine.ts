@@ -108,7 +108,9 @@ interface Warp {
   barStep: number;
   /** Bumped at every __syncwarp and __syncthreads, for race ordering. */
   sync: number;
-  exitLine: number;
+  /** Lanes that left through a return statement, and the line of the first one. */
+  early: number;
+  earlyLine: number;
 }
 
 class Fail extends Error {
@@ -146,23 +148,24 @@ class Shadow {
   wT: Int32Array;
   wE: Int32Array;
   wS: Int32Array;
-  wLine: Int32Array;
+  /** Instruction of the last write. */
+  wPc: Int32Array;
   wAtomic: Uint8Array;
   rT: Int32Array;
   rE: Int32Array;
   rS: Int32Array;
-  rLine: Int32Array;
+  rPc: Int32Array;
 
   constructor(n: number) {
     this.wT = new Int32Array(n).fill(-1);
     this.wE = new Int32Array(n);
     this.wS = new Int32Array(n);
-    this.wLine = new Int32Array(n);
+    this.wPc = new Int32Array(n);
     this.wAtomic = new Uint8Array(n);
     this.rT = new Int32Array(2 * n).fill(-1);
     this.rE = new Int32Array(2 * n);
     this.rS = new Int32Array(2 * n);
-    this.rLine = new Int32Array(2 * n);
+    this.rPc = new Int32Array(2 * n);
   }
 
   reset(): void {
@@ -174,7 +177,7 @@ class Shadow {
 interface Hazard {
   kind: 'write' | 'read' | 'atomic';
   thread: number;
-  line: number;
+  pc: number;
 }
 
 export class Machine {
@@ -383,7 +386,8 @@ export class Machine {
       barPc: -1,
       barStep: -1,
       sync: 0,
-      exitLine: 0,
+      early: 0,
+      earlyLine: 0,
     };
   }
 
@@ -412,21 +416,34 @@ export class Machine {
     this.pc = first.barPc;
     this.step = first.barStep;
     const line = this.code[first.barPc].line;
-    let exited = 0;
-    let exitLine = 0;
+    let early = 0;
+    let earlyLine = 0;
+    let finished = 0;
+    let finishedWarps = 0;
     for (const w of warps) {
-      const gone = popcount(w.exists & ~w.live);
-      if (gone) {
-        exited += gone;
-        exitLine ||= w.exitLine;
+      const gone = w.exists & ~w.live;
+      if (!gone) continue;
+      early += popcount(gone & w.early);
+      earlyLine ||= w.earlyLine;
+      if (gone & ~w.early) {
+        finished += popcount(gone & ~w.early);
+        finishedWarps |= 1 << w.index;
       }
     }
-    if (exited > 0) {
+    const expects = `__syncthreads() on line ${line} expects all ${this.threads} threads of the block`;
+    if (early > 0) {
       throw new Fail(
         'deadlock',
-        `__syncthreads() on line ${line} waits for all ${this.threads} threads of the block, but ${exited} returned early` +
-          (exitLine ? ` (line ${exitLine})` : '') +
-          `. Every thread has to reach the same barrier; guard the work with an if instead of returning.`,
+        `${expects}, but ${early} of them returned early on line ${earlyLine}. ` +
+          `CUDA requires every thread to reach the barrier, so guard the work with an if instead of returning.`,
+      );
+    }
+    if (finished > 0) {
+      const which = `warp${popcount(finishedWarps) > 1 ? 's' : ''} ${laneList(finishedWarps)}`;
+      throw new Fail(
+        'deadlock',
+        `${expects}, but ${finished} of them (${which}) finished the kernel without reaching it. ` +
+          `CUDA requires every thread to reach the barrier, which fails when it sits inside an if or a loop that not every thread runs.`,
       );
     }
     const lines = new Map<number, number[]>();
@@ -437,7 +454,11 @@ export class Machine {
     }
     if (lines.size > 1) {
       const where = [...lines].map(([l, ws]) => `warp${ws.length > 1 ? 's' : ''} ${ws.join(', ')} on line ${l}`);
-      throw new Fail('deadlock', `warps wait at different __syncthreads() calls: ${where.join('; ')}. Real hardware hangs here.`);
+      throw new Fail(
+        'deadlock',
+        `the warps of this block wait at different __syncthreads() calls (${where.join(', ')}), ` +
+          `and since CUDA leaves that undefined, the kernel may hang or misbehave on a real GPU.`,
+      );
     }
     let maxClock = 0;
     for (const w of waiting) maxClock = Math.max(maxClock, w.clock);
@@ -458,7 +479,7 @@ export class Machine {
 
   private stepWarp(w: Warp): void {
     if (++this.steps > this.maxSteps) {
-      throw new Fail('timeout', `the kernel ran for more than ${this.maxSteps.toLocaleString('en-US')} warp instructions; is there an infinite loop?`);
+      throw new Fail('timeout', `the kernel ran for more than ${this.maxSteps.toLocaleString('en-US')} warp instructions, which usually means a loop that never ends`);
     }
     const stack = w.stack;
     const top = stack[stack.length - 1];
@@ -487,10 +508,11 @@ export class Machine {
         }
         case 'bin': {
           const { fn, float } = ins;
+          const uns = ins.unsigned === true;
           const d = ins.dst * 32;
           const a = ins.a * 32;
           const b = ins.b * 32;
-          for (let l = 0; l < 32; l++) if ((m >>> l) & 1) R[d + l] = binOp(fn, float, R[a + l], R[b + l]);
+          for (let l = 0; l < 32; l++) if ((m >>> l) & 1) R[d + l] = binOp(fn, float, R[a + l], R[b + l], uns);
           break;
         }
         case 'mad': {
@@ -569,7 +591,10 @@ export class Machine {
         case 'ret':
           for (const e of stack) e.mask &= ~m;
           w.live &= ~m;
-          if (!w.exitLine) w.exitLine = ins.line;
+          if (ins.early) {
+            w.early |= m;
+            w.earlyLine ||= ins.line;
+          }
           break;
       }
     } catch (err) {
@@ -600,14 +625,19 @@ export class Machine {
     for (let i = w.stack.length - 2; i >= 0; i--) {
       const e = w.stack[i];
       if (e.mask & others && e.pc >= 0 && e.pc < this.code.length) {
-        where = ` (they are waiting at line ${this.code[e.pc].line})`;
+        where = ` (their next line is ${this.code[e.pc].line})`;
         break;
       }
     }
+    const rule =
+      what === '__syncthreads()'
+        ? 'CUDA requires every thread of the block to reach the same __syncthreads(), so move it out of the branch.'
+        : what === '__syncwarp()'
+          ? 'Every lane of the warp has to reach the same __syncwarp(), so move it out of the branch.'
+          : `Every lane named in the mask has to make the same ${what} call, so move it out of the branch or leave those lanes out of the mask.`;
     throw new Fail(
       'deadlock',
-      `${what} reached by lanes ${laneList(m)} of warp ${w.index} while lanes ${laneList(others)} took another branch${where}. ` +
-        `A barrier inside divergent code hangs real hardware.`,
+      `${what} on line ${this.code[this.pc].line} was reached by lanes ${laneList(m)} of warp ${w.index} while lanes ${laneList(others)} took another branch${where}. ${rule}`,
     );
   }
 
@@ -658,7 +688,7 @@ export class Machine {
         else addrs[naddr++] = idx;
       }
       const gt = this.block * this.threads + w.index * 32 + l;
-      this.checkRace(shadow, idx, gt, w, kind, ins.line, () => `${name}[${idx}]`);
+      this.checkRace(shadow, idx, gt, w, kind, () => `${name}[${idx}]`);
       const old = buf[idx];
       if (ins.op === 'ld') {
         R[ins.dst * 32 + l] = old;
@@ -722,7 +752,7 @@ export class Machine {
         if (counts[bank] > wavefronts) wavefronts = counts[bank];
       }
       const gt = this.block * this.threads + w.index * 32 + l;
-      this.checkRace(this.sharedShadow, word, gt, w, kind, ins.line, () => sharedName(arr, idx));
+      this.checkRace(this.sharedShadow, word, gt, w, kind, () => sharedName(arr, idx));
       const old = mem[word];
       const enc = -(ins.buf + 1);
       if (ins.op === 'ld') {
@@ -752,13 +782,14 @@ export class Machine {
     this.notedLines.add(line);
     this.notes.push({
       severity: 'warning',
-      message: `line ${line} reads ${sharedName(arr, idx)} before any thread wrote it; shared memory starts out as garbage`,
+      message: `reads ${sharedName(arr, idx)} before any thread wrote it, and shared memory starts out as garbage`,
       line,
       col: 1,
     });
   }
 
-  private checkRace(sh: Shadow, word: number, gt: number, w: Warp, kind: number, line: number, name: () => string): void {
+  private checkRace(sh: Shadow, word: number, gt: number, w: Warp, kind: number, name: () => string): void {
+    const pc = this.pc;
     const e = this.blockEpoch;
     const sy = w.sync;
     const ordered = (pT: number, pE: number, pS: number) => {
@@ -773,19 +804,19 @@ export class Machine {
     if (wT >= 0 && !ordered(wT, sh.wE[word], sh.wS[word])) {
       const atomic = sh.wAtomic[word] === 1;
       if (kind === WRITE || (!atomic && (kind === READ || kind === ATOMIC))) {
-        other = { kind: atomic ? 'atomic' : 'write', thread: wT, line: sh.wLine[word] };
+        other = { kind: atomic ? 'atomic' : 'write', thread: wT, pc: sh.wPc[word] };
       }
     }
     if (!other && kind === WRITE) {
       for (let r = 0; r < 2; r++) {
         const rt = sh.rT[2 * word + r];
         if (rt >= 0 && !ordered(rt, sh.rE[2 * word + r], sh.rS[2 * word + r])) {
-          other = { kind: 'read', thread: rt, line: sh.rLine[2 * word + r] };
+          other = { kind: 'read', thread: rt, pc: sh.rPc[2 * word + r] };
           break;
         }
       }
     }
-    if (other) this.reportRace(other, { kind: kind === READ ? 'read' : kind === WRITE ? 'write' : 'atomic', thread: gt, line }, name, sh === this.sharedShadow);
+    if (other) this.reportRace(other, { kind: kind === READ ? 'read' : kind === WRITE ? 'write' : 'atomic', thread: gt, pc }, name, sh === this.sharedShadow);
     if (kind === READ) {
       let slot = -1;
       for (let r = 0; r < 2; r++) {
@@ -800,13 +831,13 @@ export class Machine {
         sh.rT[i] = gt;
         sh.rE[i] = e;
         sh.rS[i] = sy;
-        sh.rLine[i] = line;
+        sh.rPc[i] = pc;
       }
     } else {
       sh.wT[word] = gt;
       sh.wE[word] = e;
       sh.wS[word] = sy;
-      sh.wLine[word] = line;
+      sh.wPc[word] = pc;
       sh.wAtomic[word] = kind === ATOMIC ? 1 : 0;
       if (kind === WRITE) {
         sh.rT[2 * word] = -1;
@@ -822,19 +853,29 @@ export class Machine {
     const prevName = this.globalThreadName(prev.thread);
     const curName = this.globalThreadName(cur.thread);
     const sameBlock = Math.floor(prev.thread / this.threads) === Math.floor(cur.thread / this.threads);
-    const hint = !sameBlock
-      ? 'Blocks cannot wait for each other inside a kernel; use an atomic.'
-      : prev.kind === 'atomic' || cur.kind === 'atomic'
-        ? 'Mixing atomic and plain writes to one address is a race; make them all atomic.'
-        : prev.line === cur.line && prev.kind === 'write' && cur.kind === 'write'
-          ? 'Several threads write the same address; only one of them should, or use an atomic.'
-          : 'Put a __syncthreads() between them.';
+    const p = this.code[prev.pc];
+    const c = this.code[cur.pc];
+    const sameLine = p.line === c.line;
+    const writeWrite = sameLine && prev.kind === 'write' && cur.kind === 'write';
+    // A load and a store through the same index register on one line: `x[k] += v` or `x[k]++`.
+    const inPlace = sameLine && prev.kind !== cur.kind && 'idx' in p && 'idx' in c && p.idx === c.idx;
+    const hint =
+      prev.kind === 'atomic' || cur.kind === 'atomic'
+        ? 'Mixing atomic and plain accesses to one address is a race, so make them all atomic.'
+        : inPlace
+          ? 'Both threads update it in place at the same time, so the update has to be an atomic such as atomicAdd.'
+          : !sameBlock
+            ? writeWrite
+              ? 'Blocks run in no fixed order, so if each block should write its own elements the index needs blockIdx, and if they all add into one place the update has to be an atomic.'
+              : 'Blocks run in no fixed order and cannot wait for each other inside a kernel, so the update has to be an atomic.'
+            : writeWrite
+              ? 'Both threads wrote it from the same line, so if each thread should have its own element, check the index math and the bounds, and if they share it, let one thread write it or use an atomic.'
+              : 'Put a __syncthreads() between them.';
     const message =
-      `race on ${shared ? 'shared ' : ''}${name()}: ${prevName} ${verb(prev)} it on line ${prev.line} and ` +
-      `${curName} ${verb(cur)} it on line ${cur.line}, with nothing ordering the two. ${hint}`;
+      `race on ${shared ? 'shared ' : ''}${name()}: ${prevName} ${verb(prev)} it on line ${p.line} and ` +
+      `${curName} ${verb(cur)} it on line ${c.line}, with nothing ordering the two. ${hint}`;
     this.firstRace = message;
-    const ins = this.code[this.pc];
-    this.raceFault = { kind: 'race', message, line: cur.line, col: ins.col, step: this.step };
+    this.raceFault = { kind: 'race', message, line: c.line, col: c.col, step: this.step };
   }
 
   private shuffle(w: Warp, ins: Extract<Instr, { op: 'shfl' }>, m: number): void {
@@ -850,7 +891,10 @@ export class Machine {
     if (missing) {
       const exited = missing & ~w.live;
       if (exited) {
-        throw new Fail('deadlock', `${name} names lanes ${laneList(exited)} in its mask, but they already returned. Real hardware hangs or returns garbage here.`);
+        throw new Fail(
+          'deadlock',
+          `${name} names lanes ${laneList(exited)} in its mask, but they already returned, which CUDA leaves undefined, so a real GPU may hang or return garbage.`,
+        );
       }
       this.divergedAt(w, m, name);
     }
