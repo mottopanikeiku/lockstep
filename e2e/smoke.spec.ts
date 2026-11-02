@@ -22,5 +22,13 @@ test('loads the game and solves level 1', async ({ page }) => {
   await page.getByRole('button', { name: 'Step back' }).click();
   await expect(page.locator('#step-info')).toContainText('store out');
   await expect(page.locator('.cm-step-line')).toHaveText('  out[i] = a[i] + 10.0f;');
+
+  // A shared link opens the same code in a fresh page.
+  await page.getByRole('button', { name: 'Share' }).click();
+  await expect(page).toHaveURL(/#map\/[A-Za-z0-9_-]+$/);
+  const fresh = await page.context().newPage();
+  await fresh.goto(page.url());
+  await expect(fresh.locator('.shared-note')).toBeVisible();
+  await expect(fresh.locator('.cm-content')).toContainText('out[i] = a[i] + 10.0f;');
   expect(errors).toEqual([]);
 });

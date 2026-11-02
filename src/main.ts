@@ -376,7 +376,8 @@ function renderProblem(a: Attempt, improved: Record<keyof Par, boolean> | null):
   const p = a.problem;
   if (p) {
     box.className = 'problem';
-    box.innerHTML = `<span class="kind">${KIND_LABEL[p.kind]}</span>${p.line ? `line ${p.line}` : ''}<p>${escapeHtml(p.message)}</p>`;
+    const where = p.line ? `line ${p.line}${p.kind === 'compile' && p.col > 1 ? `, column ${p.col}` : ''}` : '';
+    box.innerHTML = `<span class="kind">${KIND_LABEL[p.kind]}</span>${where}<p>${escapeHtml(p.message)}</p>`;
     if (p.line) {
       const go = document.createElement('button');
       go.textContent = p.step !== undefined ? `Show step ${(p.step + 1).toLocaleString('en-US')}` : `Go to line ${p.line}`;

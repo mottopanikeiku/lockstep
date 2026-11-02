@@ -12,6 +12,10 @@ describe('reference solutions', () => {
     expect(a.problem).toBeUndefined();
     expect(a.warnings).toEqual([]);
     expect(a.solved).toBe(true);
+    // The breakdown docs/cost-model.md describes adds up to the score.
+    const m = a.sim!.metrics;
+    expect(m.issued + m.specialCycles + m.shuffleCycles + m.globalCycles + m.sharedCycles + m.barrierWait).toBe(m.cycles);
+    expect(a.sim!.lineCycles.reduce((x, y) => x + y, 0)).toBe(m.cycles);
     scores[level.id] = a.score!;
   });
 

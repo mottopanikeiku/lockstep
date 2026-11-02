@@ -24,7 +24,7 @@ interface Grid {
   index: (row: number, col: number) => number;
 }
 
-const MAX_HEIGHT = 200;
+const MAX_HEIGHT = 140;
 
 function makeGrid(n: number, cols: number, first: number, width: number): Grid {
   const rows = Math.ceil((first + n) / cols);
@@ -95,12 +95,13 @@ export class MemoryView {
       this.root.append(fig);
       this.canvases.push({ canvas, caption: live, kind, index });
     };
-    for (const [i, a] of arrays.entries()) {
-      add('global', i, a.name, `${a.type} ${a.shape.join('×')} · ${a.output ? 'output' : 'input'}`);
-    }
+    // Shared memory first: it is the block's working set and changes from step to step.
     replay.kernel.shared.forEach((s, i) => {
       add('shared', i, s.name, `__shared__ ${s.type} ${s.dims.length ? s.dims.join('×') : 'scalar'} · 32 banks across`);
     });
+    for (const [i, a] of arrays.entries()) {
+      add('global', i, a.name, `${a.type} ${a.shape.join('×')} · ${a.output ? 'output' : 'input'}`);
+    }
   }
 
   setStep(step: number, block: number): void {
