@@ -1,0 +1,102 @@
+{
+  "map": {
+    "cycles": 36,
+    "sectors": 8,
+    "lines": 3
+  },
+  "zip": {
+    "cycles": 53,
+    "sectors": 12,
+    "lines": 3
+  },
+  "guard": {
+    "cycles": 68,
+    "sectors": 14,
+    "lines": 3
+  },
+  "map-2d": {
+    "cycles": 214,
+    "sectors": 36,
+    "lines": 4
+  },
+  "broadcast": {
+    "cycles": 214,
+    "sectors": 36,
+    "lines": 4
+  },
+  "blocks": {
+    "cycles": 253,
+    "sectors": 50,
+    "lines": 3
+  },
+  "blocks-2d": {
+    "cycles": 2404,
+    "sectors": 400,
+    "lines": 4
+  },
+  "shared": {
+    "cycles": 368,
+    "sectors": 64,
+    "lines": 8
+  },
+  "pooling": {
+    "cycles": 650,
+    "sectors": 80,
+    "lines": 9
+  },
+  "dot": {
+    "cycles": 4988,
+    "sectors": 260,
+    "lines": 11
+  },
+  "conv": {
+    "cycles": 1220,
+    "sectors": 81,
+    "lines": 15
+  },
+  "scan": {
+    "cycles": 1392,
+    "sectors": 64,
+    "lines": 12
+  },
+  "axis-sum": {
+    "cycles": 9904,
+    "sectors": 528,
+    "lines": 13
+  },
+  "matmul": {
+    "cycles": 25376,
+    "sectors": 4224,
+    "lines": 6
+  },
+  "tiled-matmul": {
+    "cycles": 47160,
+    "sectors": 2016,
+    "lines": 15
+  },
+  "transpose": {
+    "cycles": 10368,
+    "sectors": 1536,
+    "lines": 13
+  },
+  "warp-reduce": {
+    "cycles": 4128,
+    "sectors": 264,
+    "lines": 12
+  },
+  "histogram": {
+    "cycles": 1220,
+    "sectors": 136,
+    "lines": 10
+  },
+  "softmax": {
+    "cycles": 9280,
+    "sectors": 512,
+    "lines": 19
+  },
+  "attention": {
+    "cycles": 77552,
+    "sectors": 1152,
+    "lines": 34
+  }
+}

@@ -12,7 +12,8 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": []
+    "resolveJsonModule": true,
+    "types": ["node"]
   },
   "include": ["src", "test", "e2e", "vite.config.ts", "playwright.config.ts"]
 }
