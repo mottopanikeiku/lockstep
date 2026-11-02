@@ -6,7 +6,7 @@ export const basics: Level[] = [
   {
     id: 'map',
     title: 'Map',
-    text: 'Add 10 to every element of `a` and store the result in `out`. There is one thread per element, so thread `i` handles `a[i]`.',
+    text: 'Add 10 to every element of `a` and store the result in `out`. The launch `<<<1, 32>>>` starts one block of 32 threads, one per element, and each thread finds its element through `threadIdx.x`, so thread `i` handles `a[i]`.',
     params: [
       { kind: 'array', name: 'a', type: 'float', shape: [32], data: index },
       { kind: 'array', name: 'out', type: 'float', shape: [32], output: true },
@@ -27,7 +27,7 @@ export const basics: Level[] = [
   {
     id: 'zip',
     title: 'Zip',
-    text: 'Add `a` and `b` element by element into `out`.',
+    text: 'Add `a` and `b` element by element into `out`, again with one thread per element.',
     params: [
       { kind: 'array', name: 'a', type: 'float', shape: [32], data: index },
       { kind: 'array', name: 'b', type: 'float', shape: [32], data: randInt(0, 10) },
@@ -48,8 +48,8 @@ export const basics: Level[] = [
   {
     id: 'guard',
     title: 'Guard',
-    text: 'Add 10 to every element again, but now the block has 64 threads and `a` has only `n` = 50 elements. Threads past the end must not touch memory.',
-    hint: 'Wrap the work in `if (i < n)`. The lanes that fail the test sit idle while the others run, which you can see in the thread view.',
+    text: 'Add 10 to every element again, but now the block has 64 threads while `a` has only `n` = 50 elements, so the threads past the end must not touch memory.',
+    hint: 'Wrap the work in `if (i < n)`, and the lanes that fail the test sit idle while the others run, which you can see in the Threads panel.',
     params: [
       { kind: 'array', name: 'a', type: 'float', shape: [50], data: index },
       { kind: 'array', name: 'out', type: 'float', shape: [50], output: true },
@@ -70,7 +70,8 @@ export const basics: Level[] = [
   {
     id: 'map-2d',
     title: 'Map 2D',
-    text: '`a` is a 12×12 matrix stored row by row, so element (row, col) lives at `a[row * size + col]`. The block is 16×16 threads: `threadIdx.x` picks the column and `threadIdx.y` the row. Add 10 to every element.',
+    text: 'Add 10 to every element of `a`, a 12×12 matrix stored row by row, so that element (row, col) lives at `a[row * size + col]`. The block is 16×16 threads, where `threadIdx.x` picks the column and `threadIdx.y` the row, so some threads fall outside the matrix.',
+    hint: 'Check both `row < size` and `col < size` before touching memory, because a check on `row * size + col` alone lets thread (12, 0) and thread (0, 1) land on the same element 12.',
     params: [
       { kind: 'array', name: 'a', type: 'float', shape: [12, 12], data: index },
       { kind: 'array', name: 'out', type: 'float', shape: [12, 12], output: true },
@@ -93,7 +94,7 @@ export const basics: Level[] = [
   {
     id: 'broadcast',
     title: 'Broadcast',
-    text: '`a` holds one number per row and `b` one number per column. Fill the 12×12 matrix `out` with `out[row][col] = a[row] + b[col]`.',
+    text: 'Fill the 12×12 matrix `out` so that `out[row * size + col] = a[row] + b[col]`, where `a` holds one number per row and `b` one number per column.',
     params: [
       { kind: 'array', name: 'a', type: 'float', shape: [12], data: (_, i) => 10 * i },
       { kind: 'array', name: 'b', type: 'float', shape: [12], data: index },
@@ -122,7 +123,7 @@ export const basics: Level[] = [
   {
     id: 'blocks',
     title: 'Blocks',
-    text: 'A block holds at most 1024 threads, so big arrays need many blocks. Here 4 blocks of 64 threads cover `n` = 200 elements. Block `blockIdx.x` starts at element `blockIdx.x * blockDim.x`. Add 10 to every element.',
+    text: 'A block holds at most 1024 threads, so big arrays are split over many blocks, which here means 4 blocks of 64 threads covering `n` = 200 elements. Block `blockIdx.x` starts at element `blockIdx.x * blockDim.x`, so add that offset to `threadIdx.x` and then add 10 to every element as before.',
     params: [
       { kind: 'array', name: 'a', type: 'float', shape: [200], data: index },
       { kind: 'array', name: 'out', type: 'float', shape: [200], output: true },
@@ -143,8 +144,8 @@ export const basics: Level[] = [
   {
     id: 'blocks-2d',
     title: 'Blocks 2D',
-    text: 'A 40×40 matrix, covered by a 3×3 grid of 16×16 blocks. Add 10 to every element.',
-    hint: 'A warp is 32 consecutive threads in x order: here two rows of 16. When `threadIdx.x` walks along a row of the matrix, the warp reads 2 runs of 64 bytes, 4 sectors. Swap x and y and the same warp touches 32 different rows.',
+    text: 'Add 10 to every element of a 40×40 matrix, which a 3×3 grid of 16×16 blocks covers with some threads to spare.',
+    hint: 'A warp is 32 consecutive threads in x order, which here means two rows of 16. When `threadIdx.x` walks along a row of the matrix, the warp reads two runs of 64 bytes, or 4 sectors, but if you swap x and y the same warp touches 16 different rows.',
     params: [
       { kind: 'array', name: 'a', type: 'float', shape: [40, 40], data: randInt(0, 100) },
       { kind: 'array', name: 'out', type: 'float', shape: [40, 40], output: true },

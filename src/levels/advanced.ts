@@ -20,7 +20,8 @@ export const advancedLevels: Level[] = [
   {
     id: 'matmul',
     title: 'Matrix multiply',
-    text: 'Multiply two 32×32 matrices: `C[row][col]` is the dot product of row `row` of `A` and column `col` of `B`. One thread per output element, in 16×16 blocks.',
+    text: 'Multiply two 32×32 matrices, where `C[row * n + col]` is the dot product of row `row` of `A` and column `col` of `B`, using one thread per output element in 16×16 blocks.',
+    hint: 'Each thread keeps a running sum in a register while it loops `k` from 0 to `n` adding `A[row * n + k] * B[k * n + col]`, and writes the sum to `C` once at the end.',
     params: [
       { kind: 'array', name: 'A', type: 'float', shape: [32, 32], data: small },
       { kind: 'array', name: 'B', type: 'float', shape: [32, 32], data: small },
@@ -46,8 +47,8 @@ export const advancedLevels: Level[] = [
   {
     id: 'tiled-matmul',
     title: 'Tiled matmul',
-    text: 'The same product for 48×48 matrices, but now make it cheap. Every element of `A` and `B` is read by 48 threads; load each 16×16 tile into shared memory once per block and do the inner loop there.',
-    hint: 'Loop over tiles: each thread loads one element of the `A` tile and one of the `B` tile, barrier, 16 multiply-adds from shared memory, barrier again before the next tile overwrites them.',
+    text: 'Compute the same product for 48×48 matrices, but cheaply this time. Every element of `A` and `B` is read by 48 threads, so load each 16×16 tile into shared memory once per block and run the inner loop from there.',
+    hint: 'Loop over the tiles, and in each one let every thread load one element of the `A` tile and one of the `B` tile, wait at a barrier, do its 16 multiply-adds from shared memory, and wait again before the next tile overwrites them.',
     params: [
       { kind: 'array', name: 'A', type: 'float', shape: [48, 48], data: small },
       { kind: 'array', name: 'B', type: 'float', shape: [48, 48], data: small },
@@ -90,7 +91,7 @@ __global__ void matmul(const float* A, const float* B, float* C, int n) {
     id: 'transpose',
     title: 'Transpose',
     text: 'Write the transpose of the 64×96 matrix `a` into `out`, which is 96×64. Each block owns a 32×32 tile and has 32×8 threads, so every thread moves four elements.',
-    hint: 'Reading `a` along rows is cheap, but writing `out` down columns costs a sector per element. Stage the tile in shared memory so the write walks along rows too. Then read the tile down a column, and watch the bank conflicts until you pad each row to 33 floats.',
+    hint: 'Reading `a` along rows is cheap, but writing `out` down its columns costs a sector per element, so stage the tile in shared memory and let the write walk along rows too. Reading the tile down a column then causes bank conflicts, which go away when you pad each row to 33 floats.',
     params: [
       { kind: 'array', name: 'a', type: 'float', shape: [64, 96], data: (_, i) => i },
       { kind: 'array', name: 'out', type: 'float', shape: [96, 64], output: true },
@@ -138,7 +139,7 @@ __global__ void transpose(const float* a, float* out, int rows, int cols) {
     id: 'warp-reduce',
     title: 'Warp shuffle',
     text: 'Sum 2048 floats into `out[0]` with 8 blocks of 256 threads, this time with warp shuffles. `__shfl_down_sync(0xffffffff, v, k)` hands each lane the `v` of the lane `k` places above it, without touching memory.',
-    hint: 'Five shuffle rounds (16, 8, 4, 2, 1) leave each warp\'s total in lane 0. Put the 8 warp totals in shared memory, barrier, and let the first warp shuffle those down to one number.',
+    hint: 'Five shuffle rounds (16, 8, 4, 2, 1) leave each warp\'s total in lane 0. From there each warp can add its total to `out[0]` directly, or the block can collect its 8 totals in shared memory and let the first warp shuffle them down to one number, which costs fewer atomics and sectors.',
     params: [
       { kind: 'array', name: 'a', type: 'float', shape: [2048], data: randInt(0, 10) },
       { kind: 'array', name: 'out', type: 'float', shape: [1], output: true },
@@ -173,7 +174,7 @@ __global__ void reduce(const float* a, float* out) {
     id: 'histogram',
     title: 'Histogram',
     text: 'Count how often each value 0 to 15 appears among 1024 ints and store the counts in `hist`. Many threads hit the same bin at once, so the increments have to be atomic.',
-    hint: 'Every warp fights over 16 global counters. Give each block its own 16 counters in shared memory, count there, and add the block\'s counts to `hist` at the end.',
+    hint: 'Every warp fights over the same 16 global counters, so give each block its own 16 counters in shared memory, count there, and add the block\'s counts to `hist` at the end.',
     params: [
       { kind: 'array', name: 'a', type: 'int', shape: [1024], data: randInt(0, 16) },
       { kind: 'array', name: 'hist', type: 'int', shape: [16], output: true },
@@ -209,8 +210,8 @@ __global__ void histogram(const int* a, int* hist, int n) {
   {
     id: 'softmax',
     title: 'Softmax',
-    text: 'Softmax over each row of a 16×128 matrix: `out[r][c] = exp(x[r][c] - m) / s`, where `m` is the row maximum and `s` the sum of the exponentials. One block of 128 threads per row, one element per thread.',
-    hint: 'Two block-wide reductions: a max, then a sum. Shuffles do most of it; four warps need a small shared array to combine. Mind the race when you reuse that array for the second reduction.',
+    text: 'Compute a softmax over each row of a 16×128 matrix, `out[r][c] = exp(x[r][c] - m) / s`, where `m` is the row maximum and `s` the sum of the exponentials. Each row gets one block of 128 threads, one element per thread.',
+    hint: 'The kernel needs two block-wide reductions, first a max and then a sum. Shuffles do most of the work while the four warps combine their results through a small shared array, and reusing that array for the second reduction needs care to avoid a race.',
     params: [
       { kind: 'array', name: 'x', type: 'float', shape: [16, 128], data: randFloat(-4, 4) },
       { kind: 'array', name: 'out', type: 'float', shape: [16, 128], output: true },
@@ -266,8 +267,8 @@ __global__ void softmax(const float* x, float* out, int cols) {
   {
     id: 'attention',
     title: 'Flash attention',
-    text: 'Attention for 32 queries over 128 keys, head size 16: `O = softmax(Q Kᵀ / 4) V`, one softmax per query row. Each block takes 16 queries with 16×16 threads (x is the output column, y the query). Never hold all 128 scores at once: walk over the keys in tiles of 32 held in shared memory.',
-    hint: 'Keep a running max `m`, running sum `l` and running output `acc` per thread. When a tile raises the max to `m2`, scale `l` and `acc` by `expf(m - m2)` before adding the tile\'s terms. That is the online softmax from FlashAttention.',
+    text: 'Compute attention for 32 queries over 128 keys with head size 16, `O = softmax(Q Kᵀ / 4) V`, taking one softmax per query row. Each block handles 16 queries with 16×16 threads, where x is the output column and y the query. Instead of holding all 128 scores at once, walk over the keys in tiles of 32 held in shared memory.',
+    hint: 'Keep a running max `m`, running sum `l` and running output `acc` per thread. When a tile raises the max to `m2`, scale `l` and `acc` by `expf(m - m2)` before adding the tile\'s terms, which is the online softmax from FlashAttention.',
     params: [
       { kind: 'array', name: 'Q', type: 'float', shape: [32, 16], data: randFloat(-1, 1) },
       { kind: 'array', name: 'K', type: 'float', shape: [128, 16], data: randFloat(-1, 1) },
