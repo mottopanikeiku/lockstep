@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { verdict } from '../src/game/attempt';
 import { isUnlocked, loadProgress, recordSolve, saveProgress, type Progress } from '../src/game/progress';
 import { decodeShare, encodeShare } from '../src/game/share';
 import { INTRO_LEVELS, LEVELS } from '../src/levels';
@@ -47,5 +48,23 @@ describe('progress', () => {
     expect(loadProgress(storage)).toEqual({ levels: {} });
     saveProgress({ levels: { map: { code: 'x' } }, current: 'map' }, storage);
     expect(loadProgress(storage).levels.map.code).toBe('x');
+  });
+});
+
+describe('verdict', () => {
+  const par = { cycles: 100, sectors: 10, lines: 5 };
+
+  it('compares a solve with par', () => {
+    expect(verdict(par, par)).toBe('All three scores match par.');
+    expect(verdict({ cycles: 90, sectors: 10, lines: 4 }, par)).toBe('You beat par on cycles and lines.');
+    expect(verdict({ cycles: 120, sectors: 10, lines: 5 }, par)).toBe('Cycles are over par, so there is a better kernel to find.');
+    expect(verdict({ cycles: 90, sectors: 12, lines: 6 }, par)).toBe('You beat par on cycles, while sectors and lines are over par.');
+  });
+
+  it('mentions a new personal best only when there was an old one', () => {
+    expect(verdict({ cycles: 90, sectors: 10, lines: 5 }, par, { cycles: 95, sectors: 9, lines: 5 })).toBe(
+      'You beat par on cycles. That beats your previous best on cycles.',
+    );
+    expect(verdict({ cycles: 90, sectors: 10, lines: 5 }, par, undefined)).toBe('You beat par on cycles.');
   });
 });

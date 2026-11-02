@@ -143,6 +143,11 @@ export class Timeline {
     ctx.drawImage(this.cache, 0, 0, cssWidth, height);
     const t = r.trace;
     const cx = LEFT + Math.floor((this.step * width) / t.steps) + 0.5;
+    // Steps after the cursor have not happened yet, so fade them and let a played run fill the chart in.
+    ctx.fillStyle = p.panel;
+    ctx.globalAlpha = 0.7;
+    ctx.fillRect(cx + 0.5, TOP - 1, LEFT + width - cx, this.rows * rh + 1);
+    ctx.globalAlpha = 1;
     ctx.strokeStyle = p.ink;
     ctx.lineWidth = 1;
     ctx.beginPath();

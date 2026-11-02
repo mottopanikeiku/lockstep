@@ -4,8 +4,24 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>lockstep: GPU programming, one warp at a time</title>
-    <meta name="description" content="A browser game for learning CUDA. Write small kernels and watch a simulated GPU run them warp by warp: divergence, coalescing, bank conflicts and races." />
+    <meta name="description" content="A browser game for learning CUDA, where you write small kernels and watch a simulated GPU run them warp by warp, with divergence, coalescing, bank conflicts and races on screen." />
+    <link rel="canonical" href="https://mottopanikeiku.github.io/lockstep/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="lockstep" />
+    <meta property="og:title" content="lockstep: GPU programming, one warp at a time" />
+    <meta property="og:description" content="A browser game for learning CUDA, where you write small kernels and watch a simulated GPU run them warp by warp." />
+    <meta property="og:url" content="https://mottopanikeiku.github.io/lockstep/" />
+    <meta property="og:image" content="https://mottopanikeiku.github.io/lockstep/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="The lockstep game with a dot product kernel in the editor and its warps, lanes and shared memory on the right" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://mottopanikeiku.github.io/lockstep/og.png" />
+    <meta name="theme-color" content="#f3f1ea" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#121211" media="(prefers-color-scheme: dark)" />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="./favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
     <script>
       try {
         const saved = JSON.parse(localStorage.getItem('lockstep:v1') || '{}').theme;
@@ -34,6 +50,7 @@
 
     <main class="layout">
       <section class="left" aria-label="Level and code">
+        <p class="phone-note">Everything here works on a phone, although writing kernels is much easier with a keyboard and a wider screen.</p>
         <article id="brief" class="brief"></article>
         <div class="editor-frame">
           <div class="editor-head">
@@ -43,9 +60,10 @@
           <div id="editor"></div>
         </div>
         <div class="controls">
-          <button id="run" class="primary">Run <kbd>Ctrl ↵</kbd></button>
+          <button id="run" class="primary"><span id="run-label">Run</span> <kbd>Ctrl ↵</kbd></button>
           <button id="step-back" aria-label="Step back">◀</button>
           <button id="step">Step <kbd>Alt →</kbd></button>
+          <button id="play" aria-pressed="false">Play</button>
           <span class="spacer"></span>
           <button id="reset" class="ghost">Reset code</button>
         </div>
@@ -86,21 +104,24 @@
 
     <dialog id="levels" class="levels" aria-label="Levels">
       <form method="dialog" class="dialog-head"><h2>Levels</h2><button class="ghost" aria-label="Close">✕</button></form>
-      <p class="muted">The first three open one at a time. After that, play in any order.</p>
+      <p class="muted">The first three levels open one at a time, and after that you can play the rest in any order.</p>
       <ol id="level-list"></ol>
     </dialog>
 
     <dialog id="help" class="help" aria-label="Help">
       <form method="dialog" class="dialog-head"><h2>How it works</h2><button class="ghost" aria-label="Close">✕</button></form>
       <p>
-        Your kernel runs on a simulated GPU. Each warp of 32 threads executes one instruction at a time for all its active lanes.
-        When lanes disagree at a branch the warp runs both sides, one after the other, and joins them again where the paths meet.
+        Your kernel runs on a simulated GPU, where each warp of 32 threads executes one instruction at a time for all of its
+        active lanes. When the lanes disagree at a branch, the warp runs both sides one after the other and joins them again
+        where the paths meet, which is why divergent code costs more. Step through a run, or press Play to watch it, and click
+        a lane to see its variables.
       </p>
       <p>
-        Scores: <b>cycles</b> is the total over all warps (instructions, memory traffic, bank conflicts and time spent waiting at
-        barriers), <b>sectors</b> counts the 32-byte pieces of global memory moved, and <b>lines</b> counts lines of code.
-        Par comes from a reference solution. The numbers come from a small made-up cost model, not a real GPU.
-        <a href="https://github.com/mottopanikeiku/lockstep/blob/main/docs/cost-model.md">The cost model, in one page.</a>
+        A solved level gets three scores: <b>cycles</b> adds up the time of every warp, including memory traffic, bank conflicts
+        and waiting at barriers, <b>sectors</b> counts the 32-byte pieces of global memory moved, and <b>lines</b> counts lines
+        of code. Par is the score of a reference solution, and the numbers come from a small cost model rather than a real GPU,
+        which <a href="https://github.com/mottopanikeiku/lockstep/blob/main/docs/cost-model.md">one page in the repository</a>
+        describes in full.
       </p>
       <h3>Keys</h3>
       <dl class="keys">

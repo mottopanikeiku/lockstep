@@ -133,3 +133,26 @@ export function fmt(v: number): string {
   const s = v.toPrecision(5);
   return s.includes('e') ? s : String(parseFloat(s));
 }
+
+const METRICS = ['cycles', 'sectors', 'lines'] as const;
+
+function joinNames(names: string[]): string {
+  return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+}
+
+/** One or two sentences on how a solved score compares with par and with the previous best. */
+export function verdict(score: Par, par: Par, prevBest?: Par): string {
+  const under = METRICS.filter((m) => score[m] < par[m]);
+  const over = METRICS.filter((m) => score[m] > par[m]);
+  let text: string;
+  // The metric names are plural nouns, so "cycles are over par".
+  if (!under.length && !over.length) text = 'All three scores match par.';
+  else if (!over.length) text = `You beat par on ${joinNames(under)}.`;
+  else if (!under.length) {
+    const names = joinNames(over);
+    text = `${names[0].toUpperCase()}${names.slice(1)} are over par, so there is a better kernel to find.`;
+  } else text = `You beat par on ${joinNames(under)}, while ${joinNames(over)} are over par.`;
+  const better = prevBest ? METRICS.filter((m) => score[m] < prevBest[m]) : [];
+  if (better.length) text += ` That beats your previous best on ${joinNames(better)}.`;
+  return text;
+}

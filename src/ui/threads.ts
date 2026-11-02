@@ -45,16 +45,19 @@ export class ThreadsView {
     this.render();
   }
 
-  /** Lane cell size, fitted to the panel width. */
+  /** Lane cell size and status column width, fitted to the panel width. */
   private cell = 13;
+  private status = STATUS_WIDTH;
 
   render(): void {
     const m = this.model;
     const avail = contentWidth(this.canvas.parentElement, 640);
-    const cell = (this.cell = Math.max(7, Math.min(14, Math.floor((avail - LABEL - STATUS_WIDTH) / 32) - GAP)));
+    // A phone-width panel drops the status column so that all 32 lanes still fit.
+    this.status = avail >= LABEL + 32 * (7 + GAP) + STATUS_WIDTH ? STATUS_WIDTH : 0;
+    const cell = (this.cell = Math.max(5, Math.min(14, Math.floor((avail - LABEL - this.status) / 32) - GAP)));
     const pitch = cell + GAP;
     const rows = m ? m.warps.length : 1;
-    const ctx = fitCanvas(this.canvas, LABEL + 32 * pitch + STATUS_WIDTH, rows * ROW + 4);
+    const ctx = fitCanvas(this.canvas, LABEL + 32 * pitch + this.status, rows * ROW + 4);
     const p = palette();
     ctx.font = `11px ${p.mono}`;
     ctx.textBaseline = 'middle';
@@ -105,6 +108,7 @@ export class ThreadsView {
           ctx.fillRect(x + cell + GAP / 2 - 0.5, y - 1, 1, cell + 2);
         }
       }
+      if (!this.status) return;
       const status = STATUS_TEXT[w.status] || (w.line ? `line ${w.line}` : '');
       ctx.fillStyle = w.issuing ? p.ink : p.ink3;
       ctx.fillText(w.issuing ? `▸ ${status}` : status, LABEL + 32 * pitch + 8, y + cell / 2);

@@ -96,6 +96,8 @@ code {
   border: 1px solid var(--rule);
   padding: 0 0.3em;
   border-radius: 2px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
 kbd {
@@ -198,6 +200,7 @@ button:disabled {
 
 .level-button {
   border-color: var(--rule);
+  white-space: nowrap;
 }
 
 .top-actions {
@@ -248,9 +251,64 @@ button:disabled {
   .right {
     overflow: visible;
   }
+  .left {
+    border-right: none;
+    border-bottom: 1px solid var(--rule);
+  }
+}
+
+.phone-note {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .top {
+    gap: 8px;
+    padding: 8px 12px;
+  }
+  .brand span {
+    display: none;
+  }
+  .level-button {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .left,
+  .right {
+    padding: 14px 12px 22px;
+  }
+  .controls {
+    flex-wrap: wrap;
+  }
+  .controls kbd {
+    display: none;
+  }
+  .editor-frame {
+    min-height: 220px;
+  }
+  #editor-note {
+    display: none;
+  }
+  .phone-note {
+    display: block;
+    font: 12px/1.5 var(--mono);
+    color: var(--ink-3);
+    margin: 0;
+  }
 }
 
 /* ---- brief ---- */
+
+.brief .intro {
+  font: 15px/1.55 var(--serif);
+  color: var(--ink-2);
+  max-width: 62ch;
+  margin: 0 0 14px;
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid var(--accent);
+}
 
 .brief .kicker {
   font: 11px var(--mono);

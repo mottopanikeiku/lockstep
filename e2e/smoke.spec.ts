@@ -5,6 +5,7 @@ test('loads the game and solves level 1', async ({ page }) => {
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto('./');
   await expect(page.locator('h1')).toHaveText('Map');
+  await expect(page.locator('.intro')).toContainText('A CUDA kernel is a function');
 
   await page.locator('.cm-content').click();
   await page.keyboard.press('ControlOrMeta+a');
@@ -13,9 +14,15 @@ test('loads the game and solves level 1', async ({ page }) => {
   );
   await page.getByRole('button', { name: /^Run/ }).click();
 
-  await expect(page.locator('#problem')).toContainText('Solved');
+  await expect(page.locator('#problem')).toContainText('All three scores match par.');
   await expect(page.locator('#score .status')).toHaveText('solved');
   await expect(page.locator('#outputs')).toContainText('all 32 values match');
+  await expect(page.locator('#step-info')).toContainText('step 4 of 4');
+
+  // Play starts over from the first step and stops at the last one.
+  await page.getByRole('button', { name: 'Play' }).click();
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
   await expect(page.locator('#step-info')).toContainText('step 4 of 4');
 
   // Stepping moves through the trace and highlights the source line.

@@ -1,7 +1,8 @@
 import './style.css';
-import { attempt, fmt, signature, type Attempt } from './game/attempt';
+import { fmt, signature, verdict, type Attempt } from './game/attempt';
 import { isSolved, isUnlocked, loadProgress, recordSolve, saveProgress } from './game/progress';
 import { decodeShare, encodeShare } from './game/share';
+import type { RunReply, RunRequest } from './game/worker';
 import type { Instr } from './ir/ir';
 import { LEVELS, PAR } from './levels';
 import type { Level, Par } from './levels/types';
@@ -35,6 +36,7 @@ const level = () => LEVELS[state.index];
 let saveTimer = 0;
 const editor = createEditor($('editor'), {
   onChange() {
+    stopPlay();
     if (state.run && !state.stale) {
       state.stale = true;
       $('right').classList.add('stale');
@@ -42,8 +44,8 @@ const editor = createEditor($('editor'), {
     clearTimeout(saveTimer);
     saveTimer = window.setTimeout(saveCode, 400);
   },
-  onRun: run,
-  onStep: step,
+  onRun: () => void run(),
+  onStep: (dir) => void step(dir),
 });
 
 function saveCode(): void {
@@ -55,7 +57,10 @@ function saveCode(): void {
 
 // ---- views ----
 
-const timeline = new Timeline($<HTMLCanvasElement>('timeline'), tooltip, seek);
+const timeline = new Timeline($<HTMLCanvasElement>('timeline'), tooltip, (s) => {
+  stopPlay();
+  seek(s);
+});
 const threads = new ThreadsView($<HTMLCanvasElement>('threads'), tooltip, (warp, lane) => {
   if (!state.replay) return;
   state.inspect = { warp: state.block * state.replay.warpsPerBlock + warp, lane };
@@ -80,6 +85,12 @@ function launchText(l: Level): string {
   return `<<<${dim(grid)}, ${dim(block)}>>>`;
 }
 
+/** Shown above the first level, for people who have never written CUDA. */
+const INTRO =
+  'A CUDA kernel is a function that many GPU threads run at once, each on its own piece of data. ' +
+  'This game runs your kernels on a simulated GPU, where threads move in warps of 32, and shows every step they take ' +
+  'and what it costs against par, the score of a reference solution. Finish the kernel below and press Run.';
+
 function renderBrief(note = ''): void {
   const l = level();
   const par = PAR[l.id];
@@ -87,7 +98,9 @@ function renderBrief(note = ''): void {
   const arrays = l.params
     .map((p) => (p.kind === 'array' ? `${p.name}: ${p.type}[${p.shape.join('×')}]${p.output ? ' (output)' : ''}` : `${p.name} = ${p.value}`))
     .join(', ');
+  const intro = state.index === 0 ? `<p class="intro">${prose(INTRO)}</p>` : '';
   $('brief').innerHTML = `
+    ${intro}
     <p class="kicker">Level ${state.index + 1} of ${LEVELS.length}</p>
     <h1>${escapeHtml(l.title)}</h1>
     <p class="text">${prose(l.text)}</p>
@@ -130,6 +143,7 @@ function renderLevelList(): void {
 }
 
 function loadLevel(index: number, code?: string, note = ''): void {
+  cancelRun();
   clearTimeout(saveTimer);
   state.index = index;
   progress.current = level().id;
@@ -142,6 +156,7 @@ function loadLevel(index: number, code?: string, note = ''): void {
 }
 
 function clearRun(): void {
+  stopPlay();
   state.run = null;
   state.replay = null;
   state.stale = false;
@@ -165,17 +180,79 @@ function clearRun(): void {
 
 // ---- running ----
 
-function run(): void {
+// The simulator runs in a worker. A new run, or a change of level, drops the one in flight.
+let simWorker = startWorker();
+let pending: { id: number; code: string; index: number; resolve: (shown: boolean) => void } | null = null;
+let runSeq = 0;
+let busyTimer = 0;
+
+function startWorker(): Worker {
+  const w = new Worker(new URL('./game/worker.ts', import.meta.url), { type: 'module' });
+  w.onmessage = (e: MessageEvent<RunReply>) => finishRun(e.data);
+  return w;
+}
+
+function setBusy(busy: boolean): void {
+  clearTimeout(busyTimer);
+  // Only say so when a run takes long enough to notice.
+  if (busy) busyTimer = window.setTimeout(() => ($('run-label').textContent = 'Running…'), 150);
+  else $('run-label').textContent = 'Run';
+}
+
+function cancelRun(): void {
+  if (!pending) return;
+  simWorker.terminate();
+  simWorker = startWorker();
+  pending.resolve(false);
+  pending = null;
+  setBusy(false);
+}
+
+/** Run the editor's code; resolves to whether this run's result made it to the screen. */
+function run(): Promise<boolean> {
+  stopPlay();
+  cancelRun();
   saveCode();
+  const id = ++runSeq;
+  const code = editor.getCode();
+  setBusy(true);
+  return new Promise((resolve) => {
+    pending = { id, code, index: state.index, resolve };
+    const req: RunRequest = { id, level: state.index, src: code };
+    simWorker.postMessage(req);
+  });
+}
+
+function finishRun(reply: RunReply): void {
+  const p = pending;
+  if (!p || reply.id !== p.id) return;
+  pending = null;
+  setBusy(false);
+  if ('error' in reply) {
+    toast(`The simulator failed: ${reply.error}`);
+    p.resolve(false);
+    return;
+  }
+  showAttempt(reply.attempt);
+  // Edits made while the kernel ran make this result stale straight away.
+  if (editor.getCode() !== p.code) {
+    state.stale = true;
+    $('right').classList.add('stale');
+  }
+  p.resolve(true);
+}
+
+function showAttempt(a: Attempt): void {
   const l = level();
-  const a = attempt(l, editor.getCode(), { trace: true });
   state.run = a;
   state.stale = false;
   state.inspect = null;
   $('right').classList.remove('stale');
-  let improved: Record<keyof Par, boolean> | null = null;
+  let note = '';
   if (a.solved && a.score) {
-    improved = recordSolve(progress, l.id, a.score);
+    const prev = progress.levels[l.id]?.best;
+    note = verdict(a.score, PAR[l.id], prev && { ...prev });
+    recordSolve(progress, l.id, a.score);
     saveProgress(progress);
     renderBrief();
   }
@@ -206,18 +283,64 @@ function run(): void {
     memory.setRun(null, []);
     editor.setMarks({ error: a.problem?.line, warnings: a.warnings.map((w) => w.line) });
   }
-  renderProblem(a, improved);
+  renderProblem(a, note);
   renderScore();
   renderOutputs();
 }
 
-function step(dir: number): void {
+async function step(dir: number): Promise<void> {
+  stopPlay();
   if (!state.replay || state.stale) {
-    run();
-    if (state.replay) seek(0);
+    if ((await run()) && state.replay) seek(0);
     return;
   }
   seek(Math.max(0, Math.min(state.replay.trace.steps - 1, state.step + dir)));
+}
+
+// ---- playback ----
+
+/** A whole run plays in about this many seconds, however many steps it has. */
+const PLAY_SECONDS = 8;
+let playFrame = 0;
+let playStarting = false;
+
+function setPlaying(on: boolean): void {
+  const b = $('play');
+  b.textContent = on ? 'Pause' : 'Play';
+  b.setAttribute('aria-pressed', String(on));
+}
+
+async function startPlay(): Promise<void> {
+  if (playFrame || playStarting) return;
+  if (!state.replay || state.stale) {
+    playStarting = true;
+    const shown = await run();
+    playStarting = false;
+    if (!shown || !state.replay) return;
+    seek(0);
+  }
+  const last = state.replay!.trace.steps - 1;
+  if (state.step >= last) seek(0);
+  const rate = Math.max(12, last / PLAY_SECONDS);
+  let pos = state.step;
+  let prev = performance.now();
+  const tick = (now: number) => {
+    // A frame's timestamp can be a little older than the performance.now() taken when play started.
+    pos = Math.min(last, pos + (Math.max(0, now - prev) / 1000) * rate);
+    prev = Math.max(prev, now);
+    seek(Math.floor(pos));
+    if (pos >= last) stopPlay();
+    else playFrame = requestAnimationFrame(tick);
+  };
+  setPlaying(true);
+  playFrame = requestAnimationFrame(tick);
+}
+
+function stopPlay(): void {
+  if (!playFrame) return;
+  cancelAnimationFrame(playFrame);
+  playFrame = 0;
+  setPlaying(false);
 }
 
 let laneTimer = 0;
@@ -259,6 +382,7 @@ function renderBlockButtons(): void {
       btn.setAttribute('aria-label', `Jump to block ${btn.textContent}`);
       btn.addEventListener('click', () => {
         const first = r.firstStepOfBlock(b);
+        stopPlay();
         if (first >= 0) seek(first);
       });
       return btn;
@@ -370,7 +494,7 @@ const KIND_LABEL: Record<string, string> = {
   wrong: 'Wrong answer',
 };
 
-function renderProblem(a: Attempt, improved: Record<keyof Par, boolean> | null): void {
+function renderProblem(a: Attempt, verdictText: string): void {
   const box = $('problem');
   box.replaceChildren();
   const p = a.problem;
@@ -382,6 +506,7 @@ function renderProblem(a: Attempt, improved: Record<keyof Par, boolean> | null):
       const go = document.createElement('button');
       go.textContent = p.step !== undefined ? `Show step ${(p.step + 1).toLocaleString('en-US')}` : `Go to line ${p.line}`;
       go.addEventListener('click', () => {
+        stopPlay();
         if (p.step !== undefined) seek(p.step);
         editor.scrollToLine(p.line);
         editor.view.focus();
@@ -389,15 +514,8 @@ function renderProblem(a: Attempt, improved: Record<keyof Par, boolean> | null):
       box.append(go);
     }
   } else if (a.solved) {
-    const par = PAR[level().id];
-    const s = a.score!;
-    const beat = (['cycles', 'sectors', 'lines'] as const).filter((m) => s[m] < par[m]);
-    const best = (['cycles', 'sectors', 'lines'] as const).filter((m) => improved?.[m]);
     box.className = 'problem good';
-    box.innerHTML =
-      `<span class="kind">Solved</span>` +
-      (beat.length ? `under par on ${beat.join(' and ')}. ` : '') +
-      (best.length ? `New best on ${best.join(', ')}.` : '');
+    box.innerHTML = `<span class="kind">Solved</span>${escapeHtml(verdictText)}`;
     const next = LEVELS.findIndex((_, i) => i > state.index && isUnlocked(progress, i) && !isSolved(progress, LEVELS[i].id));
     if (next >= 0) {
       const btn = document.createElement('button');
@@ -546,9 +664,10 @@ function toast(text: string): void {
 }
 
 $('theme').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
-$('run').addEventListener('click', run);
-$('step').addEventListener('click', () => step(1));
-$('step-back').addEventListener('click', () => step(-1));
+$('run').addEventListener('click', () => void run());
+$('step').addEventListener('click', () => void step(1));
+$('step-back').addEventListener('click', () => void step(-1));
+$('play').addEventListener('click', () => (playFrame ? stopPlay() : void startPlay()));
 $('reset').addEventListener('click', () => {
   if (editor.getCode() !== level().starter && !confirm('Replace your code with the starter code?')) return;
   editor.setCode(level().starter);
@@ -576,10 +695,10 @@ document.addEventListener('keydown', (e) => {
   const inEditor = (e.target as HTMLElement).closest?.('.cm-editor');
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !inEditor) {
     e.preventDefault();
-    run();
+    void run();
   } else if (e.altKey && (e.key === 'ArrowRight' || e.key === 'ArrowLeft') && !inEditor) {
     e.preventDefault();
-    step(e.key === 'ArrowRight' ? 1 : -1);
+    void step(e.key === 'ArrowRight' ? 1 : -1);
   } else if (e.key === '?' && !inEditor && !(e.target instanceof HTMLInputElement)) {
     ($('help') as HTMLDialogElement).showModal();
   }
@@ -598,7 +717,11 @@ async function start(): Promise<void> {
   const sharedIndex = shared ? LEVELS.findIndex((l) => l.id === shared.levelId) : -1;
   if (shared && sharedIndex >= 0) {
     history.replaceState(null, '', location.pathname);
-    loadLevel(sharedIndex, shared.code, 'This is a shared solution. Press Run to see how it does. Running or editing it replaces your saved code for this level.');
+    loadLevel(
+      sharedIndex,
+      shared.code,
+      'Someone shared this solution with you, so press Run to see how it does, but note that running or editing it replaces your saved code for this level.',
+    );
     return;
   }
   const saved = LEVELS.findIndex((l) => l.id === progress.current);
